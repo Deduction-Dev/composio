@@ -90,10 +90,12 @@ class HostShell(Shell):
 
     def _has_command_exited(self, cmd: str) -> bool:
         """Waif for command to exit."""
-        _cmd, *_ = cmd.split(" ")
-        if _cmd in _NOWAIT_CMDS:
-            time.sleep(0.3)
-            return True
+        if len(cmd.split("&&")) == 1:
+            # If there is only one command, we can check if it's a no-wait command
+            _cmd, *_ = cmd.split(" ")
+            if _cmd in _NOWAIT_CMDS:
+                time.sleep(0.3)
+                return True
 
         output = subprocess.run(  # pylint: disable=subprocess-run-check
             ["ps", "-e"],
@@ -102,17 +104,10 @@ class HostShell(Shell):
         ).stdout.decode()
         return all(_cmd.lstrip().rstrip() not in output for _cmd in cmd.split("&&"))
 
-    def _get_exit_code(self) -> int:
-        """Get exit code of the last process."""
-        self._write(ECHO_EXIT_CODE)
-        *_, exit_code = self._read(wait=False).get(STDOUT).strip().split("\n")  # type: ignore
-        if len(exit_code) == 0:
-            return 0
-        return int(exit_code)
-
     def _read(
         self,
         cmd: t.Optional[str] = None,
+        command_marker: t.Optional[str] = None,
         wait: bool = True,
         timeout: float = 120.0,
     ) -> t.Dict:
@@ -124,18 +119,29 @@ class HostShell(Shell):
             raise ValueError("`cmd` cannot be `None` when `wait` is set to `True`")
 
         end_time = time.time() + timeout
+        stdout_data = None
         while time.time() < end_time:
             if wait and not self._has_command_exited(cmd=str(cmd)):
                 time.sleep(0.5)
                 continue
 
             readables, _, _ = select.select([stderr, stdout], [], [], 0.1)
-            if not readables:
-                break
-            for fd in readables:
-                data = os.read(fd, 4096)
-                if data:
-                    buffer[fd] += data
+            if readables:
+                for fd in readables:
+                    data = os.read(fd, 4096)
+                    if data:
+                        buffer[fd] += data
+
+                # Check if we've seen our specific marker
+                stdout_data = buffer[stdout].decode()
+                if command_marker is not None:
+                    if command_marker in stdout_data:
+                        # Remove the command_marker from output
+                        stdout_data = stdout_data[:stdout_data.find(command_marker)]
+                        break
+                else:
+                    break
+
             time.sleep(0.05)
 
         if self._process.poll() is not None:
@@ -150,7 +156,7 @@ class HostShell(Shell):
             )
 
         return {
-            STDOUT: buffer[stdout].decode(),
+            STDOUT: stdout_data if stdout_data is not None else buffer[stdout].decode(),
             STDERR: buffer[stderr].decode(),
         }
 
@@ -165,10 +171,42 @@ class HostShell(Shell):
 
     def exec(self, cmd: str, wait: bool = True) -> t.Dict:  # type: ignore
         """Execute command on container."""
-        self._write(cmd=cmd)
+        # Add a unique marker specific to this command, but capture exit code first
+        cmd_hash = hash(cmd)  # Use hash of command to make marker unique
+        command_marker = f"__CMD_END_{self._id}_{cmd_hash}__"
+        exit_marker = f"__EXIT_{cmd_hash}__"
+
+        # Construct command to capture both output and exit code
+        marked_cmd = f"{cmd}; __exit_code=$?; echo '{exit_marker}' $__exit_code; echo '{command_marker}'"
+
+        # Write the command
+        self._write(cmd=marked_cmd)
+        # Read until we see the command marker
+        result = self._read(cmd=cmd, command_marker=command_marker, wait=wait)
+
+        # Extract exit code from the output
+        stdout = result[STDOUT]
+        exit_code = 0
+
+        # Look for our exit marker in the output
+        if exit_marker in stdout:
+            try:
+                # Find the line with our exit marker
+                for line in stdout.splitlines():
+                    if exit_marker in line:
+                        exit_code = int(line.replace(exit_marker, '').strip())
+                        break
+            except ValueError:
+                exit_code = 1
+
+            # Remove the exit marker line from stdout
+            stdout = '\n'.join(line for line in stdout.splitlines() 
+                            if exit_marker not in line)
+
         return {
-            **self._read(cmd=cmd, wait=wait),
-            EXIT_CODE: self._get_exit_code(),
+            STDOUT: stdout,
+            STDERR: result[STDERR],
+            EXIT_CODE: exit_code
         }
 
     def teardown(self) -> None:
