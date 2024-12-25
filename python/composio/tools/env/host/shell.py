@@ -225,18 +225,18 @@ class HostShell(Shell):
 
         # Look for our exit marker in the output
         if exit_marker in stdout:
+            new_stdout_lines = []
             try:
-                # Find the line with our exit marker
+                # Process all lines in a single loop
                 for line in stdout.splitlines():
                     if exit_marker in line:
                         exit_code = int(line.replace(exit_marker, '').strip())
-                        break
+                    else:
+                        new_stdout_lines.append(line)
             except ValueError:
                 exit_code = 1
 
-            # Remove the exit marker line from stdout
-            stdout = '\n'.join(line for line in stdout.splitlines() 
-                            if exit_marker not in line)
+            stdout = '\n'.join(new_stdout_lines)
 
         # if previous command timed out, its outputs may be mixed with the current command stdout
         if exit_prefix in stdout:
