@@ -108,6 +108,7 @@ class HostShell(Shell):
         self,
         cmd: t.Optional[str] = None,
         command_marker: t.Optional[str] = None,
+        stderr_marker: t.Optional[str] = None,
         wait: bool = True,
         timeout: float = 120.0,
     ) -> t.Dict:
@@ -120,6 +121,11 @@ class HostShell(Shell):
 
         end_time = time.time() + timeout
         stdout_data = None
+        stderr_data = None
+        markers_status = {
+            stdout: False,
+            stderr: False,
+        }
         while time.time() < end_time:
             if wait and not self._has_command_exited(cmd=str(cmd)):
                 time.sleep(0.5)
@@ -128,18 +134,36 @@ class HostShell(Shell):
             readables, _, _ = select.select([stderr, stdout], [], [], 0.1)
             if readables:
                 for fd in readables:
+                    if markers_status[fd]:
+                        continue
                     data = os.read(fd, 4096)
                     if data:
                         buffer[fd] += data
 
                 # Check if we've seen our specific marker
+
+                # Check if we've seen both markers
                 stdout_data = buffer[stdout].decode()
-                if command_marker is not None:
-                    if command_marker in stdout_data:
-                        # Remove the command_marker from output
-                        stdout_data = stdout_data[:stdout_data.find(command_marker)]
-                        break
+                stderr_data = buffer[stderr].decode()
+                
+                markers_found = True
+                if command_marker is not None and command_marker not in stdout_data:
+                    markers_found = False
                 else:
+                    markers_status[stdout] = True
+                if stderr_marker is not None and stderr_marker not in stderr_data:
+                    markers_found = False
+                else:
+                    markers_status[stderr] = True
+                if markers_found:
+                    # Remove the markers from output
+                    if command_marker:
+                        stdout_data = stdout_data[:stdout_data.find(command_marker)]
+                    if stderr_marker:
+                        stderr_data = stderr_data[:stderr_data.find(stderr_marker)]
+                    break
+            else:
+                if cmd is None:
                     break
 
             time.sleep(0.05)
@@ -157,7 +181,7 @@ class HostShell(Shell):
 
         return {
             STDOUT: stdout_data if stdout_data is not None else buffer[stdout].decode(),
-            STDERR: buffer[stderr].decode(),
+            STDERR: stderr_data if stderr_data is not None else buffer[stderr].decode(),
         }
 
     def _write(self, cmd: str) -> None:
@@ -173,16 +197,27 @@ class HostShell(Shell):
         """Execute command on container."""
         # Add a unique marker specific to this command, but capture exit code first
         cmd_hash = hash(cmd)  # Use hash of command to make marker unique
-        command_marker = f"__CMD_END_{self._id}_{cmd_hash}__"
-        exit_marker = f"__EXIT_{cmd_hash}__"
+        cmd_end_prefix = f"__CMD_END"
+        command_marker = f"{cmd_end_prefix}_{self._id}_{cmd_hash}__"
+        exit_prefix = f"__EXIT"
+        exit_marker = f"{exit_prefix}_{cmd_hash}__"
+        stderr_end_prefix = f"__STDERR_END"
+        stderr_marker = f"{stderr_end_prefix}_{self._id}_{cmd_hash}__"
 
-        # Construct command to capture both output and exit code
-        marked_cmd = f"{cmd}; __exit_code=$?; echo '{exit_marker}' $__exit_code; echo '{command_marker}'"
+        # Command to add end markers for both stdout and stderr and capture exit code
+        # Write stdout marker to stdout, stderr marker directly to /dev/stderr
+        # Capture exit code of the command, then add our markers
+        marked_cmd = (
+            f"{cmd}; "
+            f"echo '{exit_marker} '$?; "  # Capture exit code immediately after command
+            f"echo '{command_marker}'; "
+            f"printf '{stderr_marker}' > /dev/stderr"
+        )
 
         # Write the command
         self._write(cmd=marked_cmd)
         # Read until we see the command marker
-        result = self._read(cmd=cmd, command_marker=command_marker, wait=wait)
+        result = self._read(cmd=cmd, command_marker=command_marker, stderr_marker=stderr_marker, wait=wait)
 
         # Extract exit code from the output
         stdout = result[STDOUT]
@@ -202,6 +237,10 @@ class HostShell(Shell):
             # Remove the exit marker line from stdout
             stdout = '\n'.join(line for line in stdout.splitlines() 
                             if exit_marker not in line)
+
+        # if previous command timed out, its outputs may be mixed with the current command stdout
+        if exit_prefix in stdout:
+            stdout = stdout[:stdout.find(exit_prefix)]
 
         return {
             STDOUT: stdout,
