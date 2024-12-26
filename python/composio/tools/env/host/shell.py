@@ -35,6 +35,9 @@ _ANSI_ESCAPE = re.compile(
 _DEV_SOURCE = Path("/home/user/.dev/bin/activate")
 _NOWAIT_CMDS = ("cd", "ls", "pwd")
 
+# Non-exhaustive list of interactive commands
+_INTERACTIVE_COMMANDS = ("tail -f", "watch", "top", "htop", "less", "more", "vim", "nano", "vi")
+
 
 class Shell(Sessionable):
     """Abstract shell session."""
@@ -87,6 +90,25 @@ class HostShell(Shell):
         for key, value in self.environment.items():
             self.exec(f"export {key}={value}")
             time.sleep(0.05)
+
+    def _is_interactive_command(self, cmd: str) -> bool:
+        """Check if command is interactive."""
+        # Split on both ; and && to handle composite commands
+        for subcmd in cmd.replace("&&", ";").split(";"):
+            subcmd = subcmd.lower().strip()
+            cmd_parts = subcmd.split()
+            if not cmd_parts:
+                continue
+
+            # Check if any part of the composite command is interactive
+            if any(
+                cmd_parts[0] == interactive_cmd.split()[0] and subcmd.startswith(interactive_cmd)
+                for interactive_cmd in _INTERACTIVE_COMMANDS
+            ):
+                return True
+
+        return False
+
 
     def _has_command_exited(self, cmd: str) -> bool:
         """Waif for command to exit."""
@@ -174,7 +196,8 @@ class HostShell(Shell):
         if time.time() >= end_time:
             raise TimeoutError(
                 "Timeout reached while reading from subprocess.\nCurrent "
-                f"buffer: {buffer}"
+                f"buffer: {buffer}. Note that interactive commands are not supported "
+                "and can timeout. Use a corresponding non-interactive command if possible."
             )
 
         return {
@@ -193,6 +216,13 @@ class HostShell(Shell):
 
     def exec(self, cmd: str, wait: bool = True) -> t.Dict:  # type: ignore
         """Execute command on container."""
+
+        if self._is_interactive_command(cmd):
+            raise ValueError(
+                "Interactive commands are not supported."
+                f" Command '{cmd}' appears to be interactive."
+            )
+
         # Add a unique marker specific to this command, but capture exit code first
         cmd_hash = hash(cmd)  # Use hash of command to make marker unique
         cmd_end_prefix = f"__CMD_END"
