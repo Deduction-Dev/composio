@@ -112,20 +112,34 @@ class HostShell(Shell):
 
     def _has_command_exited(self, cmd: str) -> bool:
         """Waif for command to exit."""
-        if len(cmd.split("&&")) == 1:
-            # If there is only one command, we can check if it's a no-wait command
-            _cmd, *_ = cmd.split(" ")
-            if _cmd in _NOWAIT_CMDS:
-                time.sleep(0.3)
-                return True
+        commands = [cmd.strip() for cmd in cmd.split("&&")]
 
+        # Check if all commands are no-wait commands
+        all_nowait = all(
+            cmd.split()[0] in _NOWAIT_CMDS
+            for cmd in commands
+        )
+        
+        if all_nowait:
+            time.sleep(0.3)
+            return True
         output = subprocess.run(  # pylint: disable=subprocess-run-check
-            ["ps", "-e"],
+            ["ps", "-e", "-o", "args="],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         ).stdout.decode()
-        return all(_cmd.lstrip().rstrip() not in output for _cmd in cmd.split("&&"))
-
+        # Check each process against our commands
+        for process in output.splitlines()[1:]:  # Skip header row
+            process = process.strip()
+            # Check if any of our commands exactly match the process
+            if any(
+                # Either exact match or command with arguments
+                process == command or process.startswith(f"{command} ")
+                for command in commands
+            ):
+                return False
+        return True
+    
     def _read(
         self,
         cmd: t.Optional[str] = None,
