@@ -127,7 +127,7 @@ class HostShell(Shell):
             stderr: False,
         }
         while time.time() < end_time:
-            if wait and not self._has_command_exited(cmd=str(cmd)):
+            if wait and cmd and not self._has_command_exited(cmd=str(cmd)):
                 time.sleep(0.5)
                 continue
 
@@ -145,7 +145,7 @@ class HostShell(Shell):
                 # Check if we've seen both markers
                 stdout_data = buffer[stdout].decode()
                 stderr_data = buffer[stderr].decode()
-                
+
                 markers_found = True
                 if command_marker is not None and command_marker not in stdout_data:
                     markers_found = False
@@ -162,10 +162,8 @@ class HostShell(Shell):
                     if stderr_marker:
                         stderr_data = stderr_data[:stderr_data.find(stderr_marker)]
                     break
-            else:
-                if cmd is None:
-                    break
-
+            if cmd is None or cmd == "":
+                break
             time.sleep(0.05)
 
         if self._process.poll() is not None:
@@ -207,8 +205,10 @@ class HostShell(Shell):
         # Command to add end markers for both stdout and stderr and capture exit code
         # Write stdout marker to stdout, stderr marker directly to /dev/stderr
         # Capture exit code of the command, then add our markers
+        # Use 'true' command if cmd is empty to avoid syntax error with leading semicolon
+        safe_cmd = cmd if cmd else "true"
         marked_cmd = (
-            f"{cmd}; "
+            f"{safe_cmd}; "
             f"echo '{exit_marker} '$?; "  # Capture exit code immediately after command
             f"echo '{command_marker}'; "
             f"printf '{stderr_marker}' > /dev/stderr"
@@ -217,7 +217,7 @@ class HostShell(Shell):
         # Write the command
         self._write(cmd=marked_cmd)
         # Read until we see the command marker
-        result = self._read(cmd=cmd, command_marker=command_marker, stderr_marker=stderr_marker, wait=wait)
+        result = self._read(cmd=safe_cmd, command_marker=command_marker, stderr_marker=stderr_marker, wait=wait)
 
         # Extract exit code from the output
         stdout = result[STDOUT]
@@ -230,7 +230,8 @@ class HostShell(Shell):
                 # Process all lines in a single loop
                 for line in stdout.splitlines():
                     if exit_marker in line:
-                        exit_code = int(line.replace(exit_marker, '').strip())
+                        exit_code = int(line.split(exit_marker)[1].strip())
+                        new_stdout_lines.append(line.split(exit_marker)[0])
                     else:
                         new_stdout_lines.append(line)
             except ValueError:
