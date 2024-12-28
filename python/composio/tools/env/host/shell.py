@@ -10,6 +10,7 @@ from abc import abstractmethod
 from pathlib import Path
 
 import paramiko
+import termios
 
 from composio.tools.env.base import Sessionable
 from composio.tools.env.constants import ECHO_EXIT_CODE, EXIT_CODE, STDERR, STDOUT
@@ -62,6 +63,7 @@ class HostShell(Shell):
         super().__init__()
         self._id = generate_id()
         self.environment = environment or {}
+        self._running = False  # indicates if any command is running
 
     def setup(self) -> None:
         """Setup host shell."""
@@ -86,10 +88,10 @@ class HostShell(Shell):
             self.logger.debug("Loading development environment")
             self.exec(f"source {_DEV_SOURCE}")
 
-        # Setup environment
-        for key, value in self.environment.items():
-            self.exec(f"export {key}={value}")
-            time.sleep(0.05)
+        if self.environment:
+            # Setup environment - combine all exports into a single command
+            exports = " ".join(f"{k}={v}" for k, v in self.environment.items())
+            self.exec(f"export {exports}")
 
     def _is_interactive_command(self, cmd: str) -> bool:
         """Check if command is interactive."""
@@ -111,7 +113,7 @@ class HostShell(Shell):
 
 
     def _has_command_exited(self, cmd: str) -> bool:
-        """Waif for command to exit."""
+        """Wait for command to exit."""
         commands = [cmd.strip() for cmd in cmd.split("&&")]
 
         # Check if all commands are no-wait commands
@@ -139,7 +141,18 @@ class HostShell(Shell):
             ):
                 return False
         return True
-    
+
+    def _clear_process_buffers(self) -> None:
+        """Clear file buffers to read any previous command outputs."""
+
+        try:
+            self._read(wait=False, read_timeout=0.1)
+            # Also flush Python's internal buffers
+            self._process.stdout.flush()
+            self._process.stderr.flush()
+        except Exception as e:
+            self.logger.warning(f"Failed to flush terminal buffers: {e}")
+
     def _read(
         self,
         cmd: t.Optional[str] = None,
@@ -147,6 +160,7 @@ class HostShell(Shell):
         stderr_marker: t.Optional[str] = None,
         wait: bool = True,
         timeout: float = 120.0,
+        read_timeout: float = 0.1,
     ) -> t.Dict:
         """Read data from a subprocess with a timeout."""
         stderr = t.cast(t.IO[str], self._process.stderr).fileno()
@@ -167,7 +181,7 @@ class HostShell(Shell):
                 time.sleep(0.5)
                 continue
 
-            readables, _, _ = select.select([stderr, stdout], [], [], 0.1)
+            readables, _, _ = select.select([stderr, stdout], [], [], read_timeout)
             if readables:
                 for fd in readables:
                     if markers_status[fd]:
@@ -176,21 +190,23 @@ class HostShell(Shell):
                     if data:
                         buffer[fd] += data
 
-                # Check if we've seen our specific marker
-
                 # Check if we've seen both markers
-                stdout_data = buffer[stdout].decode()
-                stderr_data = buffer[stderr].decode()
+                stdout_data = buffer[stdout].decode(errors='replace')
+                stderr_data = buffer[stderr].decode(errors='replace')
 
-                markers_found = True
-                if command_marker is not None and command_marker not in stdout_data:
-                    markers_found = False
-                else:
-                    markers_status[stdout] = True
-                if stderr_marker is not None and stderr_marker not in stderr_data:
-                    markers_found = False
-                else:
-                    markers_status[stderr] = True
+                markers_found = False
+                if command_marker is not None:
+                    if command_marker in stdout_data:
+                        markers_status[stdout] = True
+
+                if stderr_marker is not None:
+                    if stderr_marker in stderr_data:
+                        markers_status[stderr] = True
+
+                # Only set markers_found to True if all required markers are found
+                if markers_status[stdout] and markers_status[stderr]:
+                    markers_found = True
+
                 if markers_found:
                     # Remove the markers from output
                     if command_marker:
@@ -198,8 +214,11 @@ class HostShell(Shell):
                     if stderr_marker:
                         stderr_data = stderr_data[:stderr_data.find(stderr_marker)]
                     break
-            if cmd is None or cmd == "":
-                break
+            else:
+                # If no readable is available, break if cmd is None or empty
+                # For valid commands, we will wait until we see the command markers
+                if cmd is None or cmd == "":
+                    break
             time.sleep(0.05)
 
         if self._process.poll() is not None:
@@ -212,11 +231,12 @@ class HostShell(Shell):
                 "Timeout reached while reading from subprocess.\nCurrent "
                 f"buffer: {buffer}. Note that interactive commands are not supported "
                 "and can timeout. Use a corresponding non-interactive command if possible."
+                "Long running commands or commands reading large files may also timeout."
             )
 
         return {
-            STDOUT: stdout_data if stdout_data is not None else buffer[stdout].decode(),
-            STDERR: stderr_data if stderr_data is not None else buffer[stderr].decode(),
+            STDOUT: stdout_data if stdout_data is not None else buffer[stdout].decode(errors='replace'),
+            STDERR: stderr_data if stderr_data is not None else buffer[stderr].decode(errors='replace'),
         }
 
     def _write(self, cmd: str) -> None:
@@ -228,7 +248,7 @@ class HostShell(Shell):
         except BrokenPipeError as e:
             raise RuntimeError(str(e)) from e
 
-    def exec(self, cmd: str, wait: bool = True) -> t.Dict:  # type: ignore
+    def exec(self, cmd: str, wait: bool = True, timeout: float = 120.0) -> t.Dict:  # type: ignore
         """Execute command on container."""
 
         if self._is_interactive_command(cmd):
@@ -237,61 +257,80 @@ class HostShell(Shell):
                 f" Command '{cmd}' appears to be interactive."
             )
 
-        # Add a unique marker specific to this command, but capture exit code first
-        cmd_hash = hash(cmd)  # Use hash of command to make marker unique
-        cmd_end_prefix = f"__CMD_END"
-        command_marker = f"{cmd_end_prefix}_{self._id}_{cmd_hash}__"
-        exit_prefix = f"__EXIT"
-        exit_marker = f"{exit_prefix}_{cmd_hash}__"
-        stderr_end_prefix = f"__STDERR_END"
-        stderr_marker = f"{stderr_end_prefix}_{self._id}_{cmd_hash}__"
+        if self._running:
+            raise RuntimeError("Cannot execute command while another command is still being read")
 
-        # Command to add end markers for both stdout and stderr and capture exit code
-        # Write stdout marker to stdout, stderr marker directly to /dev/stderr
-        # Capture exit code of the command, then add our markers
-        # Use 'true' command if cmd is empty to avoid syntax error with leading semicolon
-        safe_cmd = cmd if cmd else "true"
-        marked_cmd = (
-            f"{safe_cmd}; "
-            f"echo '{exit_marker} '$?; "  # Capture exit code immediately after command
-            f"echo '{command_marker}'; "
-            f"printf '{stderr_marker}' > /dev/stderr"
-        )
+        command_exited_successfully = False
+        try:
+            self._running = True
 
-        # Write the command
-        self._write(cmd=marked_cmd)
-        # Read until we see the command marker
-        result = self._read(cmd=safe_cmd, command_marker=command_marker, stderr_marker=stderr_marker, wait=wait)
+            # Clear process buffers to clear any previous command outputs
+            self._clear_process_buffers()
 
-        # Extract exit code from the output
-        stdout = result[STDOUT]
-        exit_code = 0
+            # Add a unique marker specific to this command, but capture exit code first
+            cmd_hash = hash(cmd)  # Use hash of command to make marker unique
+            cmd_end_prefix = f"__CMD_END"
+            command_marker = f"{cmd_end_prefix}_{self._id}_{cmd_hash}__"
+            exit_prefix = f"__EXIT"
+            exit_marker = f"{exit_prefix}_{cmd_hash}__"
+            stderr_end_prefix = f"__STDERR_END"
+            stderr_marker = f"{stderr_end_prefix}_{self._id}_{cmd_hash}__"
 
-        # Look for our exit marker in the output
-        if exit_marker in stdout:
-            new_stdout_lines = []
-            try:
-                # Process all lines in a single loop
-                for line in stdout.splitlines():
-                    if exit_marker in line:
-                        exit_code = int(line.split(exit_marker)[1].strip())
-                        new_stdout_lines.append(line.split(exit_marker)[0])
-                    else:
-                        new_stdout_lines.append(line)
-            except ValueError:
-                exit_code = 1
+            # Command to add end markers for both stdout and stderr and capture exit code
+            # Write stdout marker to stdout, stderr marker directly to /dev/stderr
+            # Capture exit code of the command, then add our markers
+            # Use 'true' command if cmd is empty to avoid syntax error with leading semicolon
+            safe_cmd = cmd if cmd else "true"
+            marked_cmd = (
+                f"{safe_cmd}; "
+                f"echo '{exit_marker} '$?; "  # Capture exit code immediately after command
+                f"echo '{command_marker}'; "
+                f"printf '{stderr_marker}' > /dev/stderr"
+            )
 
-            stdout = '\n'.join(new_stdout_lines)
+            # Write the command
+            self._write(cmd=marked_cmd)
+            # Read until we see the command marker
+            result = self._read(
+                cmd=safe_cmd,
+                command_marker=command_marker,
+                stderr_marker=stderr_marker,
+                wait=wait,
+                timeout=timeout
+            )
 
-        # if previous command timed out, its outputs may be mixed with the current command stdout
-        if exit_prefix in stdout:
-            stdout = stdout[:stdout.find(exit_prefix)]
+            # Extract exit code from the output
+            stdout = result[STDOUT]
+            exit_code = 0
 
-        return {
-            STDOUT: stdout,
-            STDERR: result[STDERR],
-            EXIT_CODE: exit_code
-        }
+            # Look for our exit marker in the output
+            if exit_marker in stdout:
+                new_stdout_lines = []
+                try:
+                    # Process all lines in a single loop
+                    for line in stdout.splitlines():
+                        if exit_marker in line:
+                            exit_code = int(line.split(exit_marker)[1].strip())
+                            new_stdout_lines.append(line.split(exit_marker)[0])
+                        else:
+                            new_stdout_lines.append(line)
+                except ValueError:
+                    exit_code = 1
+
+                stdout = '\n'.join(new_stdout_lines)
+                output = {
+                    STDOUT: stdout,
+                    STDERR: result[STDERR],
+                    EXIT_CODE: exit_code
+                }
+                command_exited_successfully = True
+        finally:
+            if not command_exited_successfully:
+                # Send SIGINT to interrupt any running command which may have timed out
+                self._write("\x03")  # Send Ctrl+C
+            self._running = False
+
+        return output
 
     def teardown(self) -> None:
         """Stop and remove the running shell."""
