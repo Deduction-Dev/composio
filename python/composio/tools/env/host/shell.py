@@ -10,10 +10,10 @@ from abc import abstractmethod
 from pathlib import Path
 
 import paramiko
-import termios
+import platform
 
 from composio.tools.env.base import Sessionable
-from composio.tools.env.constants import ECHO_EXIT_CODE, EXIT_CODE, STDERR, STDOUT
+from composio.tools.env.constants import EXIT_CODE, STDERR, STDOUT
 from composio.tools.env.id import generate_id
 
 
@@ -326,8 +326,11 @@ class HostShell(Shell):
                 command_exited_successfully = True
         finally:
             if not command_exited_successfully:
-                # Send SIGINT to interrupt any running command which may have timed out
-                self._write("\x03")  # Send Ctrl+C
+                if platform.system() == "Darwin":  # macOS
+                    
+                    self._process.send_signal(subprocess.signal.SIGINT)
+                else:  # Linux and others
+                    self._write("\x03")  # Send Ctrl+C
             self._running = False
 
         return output
