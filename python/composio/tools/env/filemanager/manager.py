@@ -360,45 +360,74 @@ class FileManager(Sessionable):
         level: int,
         depth: int,
         exclude: t.List[Path],
+        max_limit: t.Optional[int] = None,
     ) -> str:
         """Auxiliary method for creating working directory tree recursively."""
         if (depth != -1 and level > depth) or directory in exclude:
             return ""
 
         tree = ""
-        for child in directory.iterdir():
-            if child.is_file():
+        
+        # Get all entries and sort into files and dirs
+        entries = list(directory.iterdir())
+        files = [e for e in entries if e.is_file()]
+        dirs = [e for e in entries if e.is_dir()]
+        
+        # Handle files with limit
+        if max_limit is not None and len(files) > max_limit:
+            for child in files[:max_limit]:
+                tree += ("  |" * level) + "__ " + child.name + "\n"
+            tree += ("  |" * level) + f"... {len(files) - max_limit} more files\n"
+        else:
+            for child in files:
                 tree += ("  |" * level) + "__ " + child.name + "\n"
 
-        for child in directory.iterdir():
-            if child.is_file():
-                continue
-            tree += ("  |" * level) + "__ " + child.name + "\n"
-            tree += self._tree(
-                directory=child,
-                level=level + 1,
-                depth=depth,
-                exclude=exclude,
-            )
+        # Handle directories with limit
+        if max_limit is not None and len(dirs) > max_limit:
+            # Show limited dirs with their contents
+            for child in dirs[:max_limit]:
+                tree += ("  |" * level) + "__ " + child.name + "\n"
+                tree += self._tree(
+                    directory=child,
+                    level=level + 1,
+                    depth=depth,
+                    exclude=exclude,
+                    max_limit=max_limit,
+                )
+            tree += ("  |" * level) + f"... {len(dirs) - max_limit} more dirs\n"
+        else:
+            for child in dirs:
+                tree += ("  |" * level) + "__ " + child.name + "\n"
+                tree += self._tree(
+                    directory=child,
+                    level=level + 1,
+                    depth=depth,
+                    exclude=exclude,
+                    max_limit=max_limit,
+                )
         return tree
 
     def tree(
         self,
         depth: t.Optional[int] = None,
         exclude: t.Optional[t.List[str]] = None,
+        max_limit: t.Optional[int] = None,
     ) -> str:
         """
         Create directory tree for the file
 
         :param depth: Max depth for the tree
         :param exclude: Exclude directories from the tree
+        :param max_limit: Maximum number of items to show per directory level
         """
         return self._tree(
             directory=self.working_dir,
             level=0,
             depth=depth or -1,
             exclude=list(map(Path, exclude or [])) + [Path(".git").resolve()],
+            max_limit=max_limit,
         )
+
 
     def ls(self) -> t.List[t.Tuple[str, str]]:
         """List contents of the current directory with their types."""
