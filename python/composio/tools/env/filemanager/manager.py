@@ -369,7 +369,7 @@ class FileManager(Sessionable):
         tree = ""
         
         # Get all entries and sort into files and dirs
-        entries = list(directory.iterdir())
+        entries = [e for e in directory.iterdir() if not e.name.startswith('.')]
         files = [e for e in entries if e.is_file()]
         dirs = [e for e in entries if e.is_dir()]
         
