@@ -361,6 +361,7 @@ class FileManager(Sessionable):
         depth: int,
         exclude: t.List[Path],
         max_limit: t.Optional[int] = None,
+        show_hidden: bool = False,
     ) -> str:
         """Auxiliary method for creating working directory tree recursively."""
         if (depth != -1 and level > depth) or directory in exclude:
@@ -369,7 +370,7 @@ class FileManager(Sessionable):
         tree = ""
         
         # Get all entries and sort into files and dirs
-        entries = [e for e in directory.iterdir() if not e.name.startswith('.')]
+        entries = [e for e in directory.iterdir() if show_hidden or not e.name.startswith('.')]
         files = [e for e in entries if e.is_file()]
         dirs = [e for e in entries if e.is_dir()]
         
