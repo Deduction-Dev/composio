@@ -413,6 +413,7 @@ class FileManager(Sessionable):
         depth: t.Optional[int] = None,
         exclude: t.Optional[t.List[str]] = None,
         max_limit: t.Optional[int] = None,
+        show_hidden: bool = False,
     ) -> str:
         """
         Create directory tree for the file
@@ -420,6 +421,7 @@ class FileManager(Sessionable):
         :param depth: Max depth for the tree
         :param exclude: Exclude directories from the tree
         :param max_limit: Maximum number of items to show per directory level
+        :param show_hidden: Whether to show hidden files and directories (starting with '.')
         """
         return self._tree(
             directory=self.working_dir,
@@ -427,6 +429,7 @@ class FileManager(Sessionable):
             depth=depth or -1,
             exclude=list(map(Path, exclude or [])) + [Path(".git").resolve()],
             max_limit=max_limit,
+            show_hidden=show_hidden,
         )
 
 
