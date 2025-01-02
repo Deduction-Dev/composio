@@ -3,6 +3,7 @@
 import hashlib
 import inspect
 import json
+import textwrap
 import typing as t
 from abc import abstractmethod
 from pathlib import Path
@@ -376,8 +377,8 @@ class ToolBuilder:
                     f"Please implement {name}.{method} as class method"
                 )
 
-    @staticmethod
-    def set_metadata(obj: t.Type["Tool"]) -> None:
+    @classmethod
+    def set_metadata(cls, obj: t.Type["Tool"]) -> None:
         setattr(obj, "file", Path(inspect.getfile(obj)))
         setattr(obj, "gid", getattr(obj, "gid", "local"))
         setattr(obj, "name", getattr(obj, "name", inflection.underscore(obj.__name__)))
@@ -391,18 +392,19 @@ class ToolBuilder:
                 inflection.humanize(inflection.underscore(obj.__name__)),
             ),
         )
-        setattr(obj, "description", (obj.__doc__ or obj.display_name).lstrip().rstrip())
+        setattr(obj, "description", cls._get_description(obj=obj))
         setattr(obj, "_actions", getattr(obj, "_actions", {}))
         setattr(obj, "_triggers", getattr(obj, "_triggers", {}))
 
     @staticmethod
-    def setup_children(obj: t.Type["Tool"]) -> None:
+    def setup_children(obj: t.Type["Tool"], no_auth: bool = False) -> None:
         if obj.gid not in action_registry:
             action_registry[obj.gid] = {}
 
         for action in obj.actions():
             action.tool = obj.name
             action.enum = f"{obj.enum}_{action.name.upper()}"
+            action.no_auth = no_auth
             if obj.requires is not None:
                 action.requires = list(set(obj.requires + (action.requires or [])))
             obj._actions[action.enum] = action  # pylint: disable=protected-access
@@ -425,6 +427,18 @@ class ToolBuilder:
 
             if hasattr(obj, "logo"):
                 setattr(trigger, "logo", getattr(obj, "logo"))
+
+    @staticmethod
+    def _get_description(obj) -> str:
+        return " ".join(
+            line
+            for line in textwrap.dedent(
+                (obj.__doc__ if obj.__doc__ else obj.display_name)
+            )
+            .strip()
+            .splitlines()
+            if line
+        )
 
 
 class Tool(WithLogger, _Attributes):

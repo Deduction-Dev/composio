@@ -1,18 +1,15 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
 import {
   COMPOSIO_DIR,
-  USER_DATA_FILE_NAME,
   DEFAULT_BASE_URL,
+  USER_DATA_FILE_NAME,
 } from "./constants";
 
-import { getEnvVariable } from "../../utils/shared";
-import { client as axiosClient } from "../client/services.gen";
-import apiClient from "../client/client";
 import { AxiosInstance } from "axios";
+import { getUUID } from "../../utils/common";
 import logger from "../../utils/logger";
-import { getUUID } from "../../utils/getUUID";
+import { getEnvVariable } from "../../utils/shared";
+import apiClient from "../client/client";
+import { client as axiosClient } from "../client/services.gen";
 declare module "axios" {
   export interface InternalAxiosRequestConfig {
     metadata?: {
@@ -22,14 +19,25 @@ declare module "axios" {
 }
 
 // File path helpers
-export const userDataPath = () =>
-  path.join(os.homedir(), COMPOSIO_DIR, USER_DATA_FILE_NAME);
+export const userDataPath = () => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require("os");
+    return path.join(os.homedir(), COMPOSIO_DIR, USER_DATA_FILE_NAME);
+  } catch (_error) {
+    return null;
+  }
+};
 
 export const getUserDataJson = () => {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("fs");
     const data = fs.readFileSync(userDataPath(), "utf8");
     return JSON.parse(data);
-  } catch (error: any) {
+  } catch (_error) {
     return {};
   }
 };

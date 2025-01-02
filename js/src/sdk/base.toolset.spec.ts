@@ -1,17 +1,20 @@
-import { describe, it, expect, beforeAll } from "@jest/globals";
-import { ComposioToolSet } from "./base.toolset";
+import { beforeAll, describe, expect, it } from "@jest/globals";
 import { getTestConfig } from "../../config/getTestConfig";
-import { ActionExecutionResDto, ExecuteActionResDTO } from "./client";
+import { TSchemaProcessor } from "../types/base_toolset";
+import { ComposioToolSet } from "./base.toolset";
+import { ActionExecutionResDto } from "./client";
 
 describe("ComposioToolSet class tests", () => {
   let toolset: ComposioToolSet;
   const testConfig = getTestConfig();
 
   beforeAll(() => {
-    toolset = new ComposioToolSet(
-      testConfig.COMPOSIO_API_KEY,
-      testConfig.BACKEND_HERMES_URL
-    );
+    toolset = new ComposioToolSet({
+      apiKey: testConfig.COMPOSIO_API_KEY,
+      baseUrl: testConfig.BACKEND_HERMES_URL,
+      runtime: "composio-ai",
+      entityId: "default",
+    });
   });
 
   it("should create a ComposioToolSet instance", async () => {
@@ -34,6 +37,26 @@ describe("ComposioToolSet class tests", () => {
       actions: ["github_issues_create"],
     });
     expect(tools).toBeInstanceOf(Array);
+  });
+
+  it("should have schema processor", async () => {
+    const addSchemaProcessor: TSchemaProcessor = ({
+      actionName: _actionName,
+      toolSchema,
+    }) => {
+      return {
+        ...toolSchema,
+        parameters: {
+          ...toolSchema.parameters,
+          description: "hello",
+        },
+      };
+    };
+
+    toolset.addSchemaProcessor(addSchemaProcessor);
+    await toolset.getToolsSchema({
+      actions: ["github_issues_create"],
+    });
   });
 
   it("should execute an action", async () => {
@@ -68,14 +91,13 @@ describe("ComposioToolSet class tests", () => {
     };
 
     const preProcessor = ({
-      action,
-      toolRequest,
+      params,
     }: {
-      action: string;
-      toolRequest: Record<string, any>;
+      params: Record<string, unknown>;
+      actionName: string;
     }) => {
       return {
-        ...toolRequest,
+        ...params,
         owner: "utkarsh-dixit",
         repo: "speedy",
         title: "Test issue2",
@@ -83,10 +105,10 @@ describe("ComposioToolSet class tests", () => {
     };
 
     const postProcessor = ({
-      action,
+      actionName: _actionName,
       toolResponse,
     }: {
-      action: string;
+      actionName: string;
       toolResponse: ActionExecutionResDto;
     }) => {
       return {
@@ -95,6 +117,7 @@ describe("ComposioToolSet class tests", () => {
           isPostProcessed: true,
         },
         error: toolResponse.error,
+        successful: toolResponse.successful,
         successfull: toolResponse.successfull,
       };
     };
@@ -112,17 +135,19 @@ describe("ComposioToolSet class tests", () => {
     // @ts-ignore
     expect(executionResult).toHaveProperty("successfull", true);
     expect(executionResult.data).toBeDefined();
-    expect(executionResult.data.title).toBe("Test issue2");
-    expect(executionResult.data.isPostProcessed).toBe(true);
+
+    const executionResultData = executionResult.data as Record<string, unknown>;
+    expect(executionResultData.title).toBe("Test issue2");
+    expect(executionResultData.isPostProcessed).toBe(true);
 
     // Remove pre processor and post processor
     toolset.removePreProcessor();
 
-    const executionResultAfterRemove = await toolset.executeAction({
+    const executionResultAfterRemove = (await toolset.executeAction({
       action: actionName,
       params: requestBody,
       entityId: "default",
-    });
+    })) as ActionExecutionResDto;
 
     expect(executionResultAfterRemove).toBeDefined();
     // @ts-ignore
@@ -137,7 +162,7 @@ describe("ComposioToolSet class tests", () => {
 
     // Check if exist
     expect(
-      actions[0].parameters.properties["attachment_file_uri_path"]
+      actions[0]!.parameters.properties["attachment_file_uri_path"]
     ).toBeDefined();
 
     const requestBody = {

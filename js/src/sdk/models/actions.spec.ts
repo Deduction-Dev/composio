@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll } from "@jest/globals";
+import { beforeAll, describe, expect, it } from "@jest/globals";
 import { getBackendClient } from "../testUtils/getBackendClient";
 import { Actions } from "./actions";
-import { Entity } from "./Entity";
 import { ConnectedAccounts } from "./connectedAccounts";
 
-describe("Apps class tests", () => {
+describe("Actions class tests", () => {
   let backendClient;
   let actions: Actions;
   let connectedAccouns: ConnectedAccounts;
@@ -54,7 +53,7 @@ describe("Apps class tests", () => {
     });
 
     expect(executionResult).toHaveProperty("successfull", true);
-    expect((executionResult as any).data).toHaveProperty("authorizations_url");
+    expect(executionResult.data).toHaveProperty("authorizations_url");
   });
 
   it("should execute an action of noauth app", async () => {
@@ -70,11 +69,16 @@ describe("Apps class tests", () => {
     });
 
     expect(executionResult).toHaveProperty("successfull", true);
-    //@ts-ignore
-    expect((executionResult as any).data).toHaveProperty(
-      "stdout",
-      "Hello World\n"
-    );
-    expect((executionResult as any).data).toHaveProperty("stderr", "");
+    expect(executionResult.data).toHaveProperty("stdout", "Hello World\n");
+    expect(executionResult.data).toHaveProperty("stderr", "");
+  });
+
+  it("should get a list of actions by use case", async () => {
+    const actionsList = await actions.findActionEnumsByUseCase({
+      apps: ["github", "notion"],
+      useCase: "create issue from github repo on notion",
+    });
+    expect(actionsList).toBeInstanceOf(Array);
+    expect(actionsList).not.toHaveLength(0);
   });
 });

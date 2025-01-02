@@ -1,29 +1,36 @@
-import {
-  z,
-  ZodType,
-  ZodObject,
-  ZodString,
-  AnyZodObject,
-  ZodOptional,
-} from "zod";
-import { zodToJsonSchema, JsonSchema7Type } from "zod-to-json-schema";
-import { ActionProxyRequestConfigDTO } from "./client";
+import { ZodObject, ZodOptional, ZodString, z } from "zod";
+import { JsonSchema7Type, zodToJsonSchema } from "zod-to-json-schema";
 import { Composio } from ".";
 import apiClient from "../sdk/client/client";
+import { RawActionData } from "../types/base_toolset";
+import { ActionProxyRequestConfigDTO, Parameter } from "./client";
+import { ActionExecuteResponse } from "./models/actions";
 import { CEG } from "./utils/error";
+import { COMPOSIO_SDK_ERROR_CODES } from "./utils/errors/src/constants";
 
-type ExecuteRequest = Omit<ActionProxyRequestConfigDTO, "connectedAccountId">;
-export interface CreateActionOptions {
+type RawExecuteRequestParam = {
+  connectedAccountId?: string;
+  endpoint: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  parameters: Array<Parameter>;
+  body?: {
+    [key: string]: unknown;
+  };
+};
+
+export type CreateActionOptions = {
   actionName?: string;
   toolName?: string;
   description?: string;
   inputParams: ZodObject<{ [key: string]: ZodString | ZodOptional<ZodString> }>;
   callback: (
-    inputParams: Record<string, any>,
-    authCredentials: Record<string, any> | undefined,
-    executeRequest: (data: ExecuteRequest) => Promise<any>
-  ) => Promise<Record<string, any>>;
-}
+    inputParams: Record<string, string>,
+    authCredentials: Record<string, string> | undefined,
+    executeRequest: (
+      data: RawExecuteRequestParam
+    ) => Promise<ActionExecuteResponse>
+  ) => Promise<ActionExecuteResponse>;
+};
 
 interface ParamsSchema {
   definitions: {
@@ -41,16 +48,17 @@ interface ExecuteMetadata {
 
 export class ActionRegistry {
   client: Composio;
-  customActions: Map<string, { metadata: CreateActionOptions; schema: any }>;
+  customActions: Map<
+    string,
+    { metadata: CreateActionOptions; schema: Record<string, unknown> }
+  >;
 
   constructor(client: Composio) {
     this.client = client;
     this.customActions = new Map();
   }
 
-  async createAction(
-    options: CreateActionOptions
-  ): Promise<Record<string, any>> {
+  async createAction(options: CreateActionOptions): Promise<RawActionData> {
     const { callback } = options;
     if (typeof callback !== "function") {
       throw new Error("Callback must be a function");
@@ -87,34 +95,36 @@ export class ActionRegistry {
       metadata: options,
       schema: composioSchema,
     });
-    return composioSchema;
+    return composioSchema as unknown as RawActionData;
   }
 
   async getActions({
     actions,
   }: {
     actions: Array<string>;
-  }): Promise<Array<any>> {
-    const actionsArr: Array<any> = [];
+  }): Promise<Array<RawActionData>> {
+    const actionsArr: Array<RawActionData> = [];
     for (const name of actions) {
       const lowerCaseName = name.toLowerCase();
       if (this.customActions.has(lowerCaseName)) {
         const action = this.customActions.get(lowerCaseName);
-        actionsArr.push(action!.schema);
+        actionsArr.push(action!.schema as RawActionData);
       }
     }
     return actionsArr;
   }
 
-  async getAllActions(): Promise<Array<any>> {
-    return Array.from(this.customActions.values()).map((action: any) => action);
+  async getAllActions(): Promise<Array<RawActionData>> {
+    return Array.from(this.customActions.values()).map(
+      (action) => action.schema as RawActionData
+    );
   }
 
   async executeAction(
     name: string,
-    inputParams: Record<string, any>,
+    inputParams: Record<string, unknown>,
     metadata: ExecuteMetadata
-  ): Promise<any> {
+  ): Promise<ActionExecuteResponse> {
     const lowerCaseName = name.toLocaleLowerCase();
     if (!this.customActions.has(lowerCaseName)) {
       throw new Error(`Action with name ${name} does not exist`);
@@ -125,7 +135,7 @@ export class ActionRegistry {
       throw new Error(`Action with name ${name} could not be retrieved`);
     }
 
-    const { callback, toolName } = action.metadata;
+    const { callback, toolName } = action.metadata || {};
     let authCredentials = {};
     if (toolName) {
       const entity = await this.client.getEntity(metadata.entityId);
@@ -138,21 +148,28 @@ export class ActionRegistry {
           `Connection with app name ${toolName} and entityId ${metadata.entityId} not found`
         );
       }
+      const connectionParams = (
+        connection as unknown as Record<string, unknown>
+      ).connectionParams as Record<string, unknown>;
       authCredentials = {
-        headers: connection.connectionParams?.headers,
-        queryParams: connection.connectionParams?.queryParams,
-        baseUrl:
-          connection.connectionParams?.baseUrl ||
-          connection.connectionParams?.base_url,
+        headers: connectionParams?.headers,
+        queryParams: connectionParams?.queryParams,
+        baseUrl: connectionParams?.baseUrl || connectionParams?.base_url,
       };
     }
     if (typeof callback !== "function") {
-      throw new Error("Callback must be a function");
+      throw CEG.getCustomError(
+        COMPOSIO_SDK_ERROR_CODES.COMMON.INVALID_PARAMS_PASSED,
+        {
+          message: "Callback must be a function",
+          description: "Please provide a valid callback function",
+        }
+      );
     }
 
-    const executeRequest = async (data: ExecuteRequest) => {
+    const executeRequest = async (data: RawExecuteRequestParam) => {
       try {
-        const { data: res } = await apiClient.actionsV2.executeActionProxyV2({
+        const { data: res } = await apiClient.actionsV2.executeWithHttpClient({
           body: {
             ...data,
             connectedAccountId: metadata?.connectionId,
@@ -165,9 +182,9 @@ export class ActionRegistry {
     };
 
     return await callback(
-      inputParams,
+      inputParams as Record<string, string>,
       authCredentials,
-      (data: ExecuteRequest) => executeRequest(data)
+      (data: RawExecuteRequestParam) => executeRequest(data)
     );
   }
 }

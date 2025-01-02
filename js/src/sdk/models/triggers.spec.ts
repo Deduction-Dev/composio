@@ -1,27 +1,26 @@
-import { describe, it, expect, beforeAll } from "@jest/globals";
+import { beforeAll, describe, expect, it } from "@jest/globals";
 import { getBackendClient } from "../testUtils/getBackendClient";
 
-import { Triggers } from "./triggers";
-import { ConnectedAccounts } from "./connectedAccounts";
+import { ComposioError } from "../utils/errors/src/composioError";
 import { Entity } from "./Entity";
 import { Actions } from "./actions";
+import { ConnectedAccounts } from "./connectedAccounts";
+import { Triggers } from "./triggers";
 
 describe("Apps class tests", () => {
   let backendClient;
   let triggers: Triggers;
-  let connectedAccounts: ConnectedAccounts;
-  let entity: Entity;
-
-  let triggerId: string;
-  let actions: Actions;
+  let _connectedAccounts: ConnectedAccounts;
+  let _entity: Entity;
+  let _actions: Actions;
 
   beforeAll(() => {
     backendClient = getBackendClient();
     triggers = new Triggers(backendClient);
-    connectedAccounts = new ConnectedAccounts(backendClient);
-    entity = new Entity(backendClient, "default");
-    connectedAccounts = new ConnectedAccounts(backendClient);
-    actions = new Actions(backendClient);
+    _connectedAccounts = new ConnectedAccounts(backendClient);
+    _entity = new Entity(backendClient, "default");
+    _connectedAccounts = new ConnectedAccounts(backendClient);
+    _actions = new Actions(backendClient);
   });
 
   it("should create an Apps instance and retrieve apps list", async () => {
@@ -31,7 +30,7 @@ describe("Apps class tests", () => {
 
   it("should retrieve a list of triggers for a specific app", async () => {
     const triggerList = await triggers.list({
-      appNames: "github",
+      appNames: ["github"],
     });
     // this is breaking for now
     expect(triggerList.length).toBeGreaterThan(0);
@@ -43,8 +42,8 @@ describe("Apps class tests subscribe", () => {
   let backendClient;
   let triggers: Triggers;
   let connectedAccounts: ConnectedAccounts;
-  let actions: Actions;
-  let entity: Entity;
+  let _actions: Actions;
+  let _entity: Entity;
 
   let triggerId: string;
 
@@ -52,8 +51,8 @@ describe("Apps class tests subscribe", () => {
     backendClient = getBackendClient();
     triggers = new Triggers(backendClient);
     connectedAccounts = new ConnectedAccounts(backendClient);
-    entity = new Entity(backendClient, "default");
-    actions = new Actions(backendClient);
+    _entity = new Entity(backendClient, "default");
+    _actions = new Actions(backendClient);
   });
 
   it("should create a new trigger for gmail", async () => {
@@ -92,6 +91,29 @@ describe("Apps class tests subscribe", () => {
 
     trigger = await triggers.disable({ triggerId });
     expect(trigger.status).toBe("success");
+  });
+
+  it("should get the config of a trigger", async () => {
+    const res = await triggers.getTriggerConfig({
+      triggerId: "GMAIL_NEW_GMAIL_MESSAGE",
+    });
+    expect(res.config.title).toBe("GmailNewMessageConfigSchema");
+  });
+
+  it("should get the payload of a trigger", async () => {
+    const res = await triggers.getTriggerInfo({
+      triggerId: "GMAIL_NEW_GMAIL_MESSAGE",
+    });
+    expect(res.displayName).toBe("New Gmail Message Received Trigger");
+  });
+
+  it("should throw an error if trigger not found", async () => {
+    try {
+      await triggers.list({ triggerIds: ["INVALID_TRIGGER_ID"] });
+    } catch (e: unknown) {
+      const error = e as ComposioError;
+      expect(error.message).toContain("Trigger not found");
+    }
   });
 
   // it("should subscribe to a trigger and receive a trigger", async () => {

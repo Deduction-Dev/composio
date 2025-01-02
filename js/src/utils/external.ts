@@ -1,6 +1,5 @@
-import { spawn, spawnSync } from "child_process";
-import { IS_DEVELOPMENT_OR_CI, TELEMETRY_URL } from "../sdk/utils/constants";
 import { serializeValue } from "../sdk/utils/common";
+import { IS_DEVELOPMENT_OR_CI } from "../sdk/utils/constants";
 import logger from "./logger";
 
 type AcceptableJSONValue =
@@ -24,6 +23,7 @@ export function sendProcessReq(info: {
   data: AcceptableJSONValue;
 }) {
   if (IS_DEVELOPMENT_OR_CI) {
+    // eslint-disable-next-line no-console
     console.log(
       `Hitting ${info.url}[${info.method}] with ${serializeValue(info.data)}`
     );
@@ -33,6 +33,8 @@ export function sendProcessReq(info: {
   try {
     // Use node-fetch for making HTTP requests
     const url = new URL(info.url);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { spawn } = require("child_process");
     const child = spawn("node", [
       "-e",
       `

@@ -1,22 +1,33 @@
-import { ConnectedAccounts } from "./models/connectedAccounts";
-import { Apps } from "./models/apps";
-import { Actions } from "./models/actions";
-import { Triggers } from "./models/triggers";
-import { Integrations } from "./models/integrations";
-import { ActiveTriggers } from "./models/activeTriggers";
-import { BackendClient } from "./models/backendClient";
-import { Entity } from "./models/Entity";
 import axios from "axios";
-import { getPackageJsonDir } from "./utils/projectUtils";
-import { isNewerVersion } from "./utils/other";
-import { CEG } from "./utils/error";
-import { GetConnectorInfoResDTO } from "./client";
-import logger, { getLogLevel } from "../utils/logger";
-import { SDK_ERROR_CODES } from "./utils/errors/src/constants";
-import { getSDKConfig } from "./utils/config";
+import { z } from "zod";
+import { COMPOSIO_VERSION } from "../constants";
+import {
+  ZGetExpectedParamsForUserParams,
+  ZGetExpectedParamsRes,
+} from "../types/composio";
+import { getUUID } from "../utils/common";
+import logger from "../utils/logger";
+import { Entity } from "./models/Entity";
+import { Actions } from "./models/actions";
+import { ActiveTriggers } from "./models/activeTriggers";
+import { Apps } from "./models/apps";
+import { BackendClient } from "./models/backendClient";
+import { ConnectedAccounts } from "./models/connectedAccounts";
+import { Integrations } from "./models/integrations";
+import { Triggers } from "./models/triggers";
+import { ZAuthMode } from "./types/integration";
 import ComposioSDKContext from "./utils/composioContext";
+import { getSDKConfig } from "./utils/config";
+import { CEG } from "./utils/error";
+import { COMPOSIO_SDK_ERROR_CODES } from "./utils/errors/src/constants";
+import { isNewerVersion } from "./utils/other";
 import { TELEMETRY_LOGGER } from "./utils/telemetry";
 import { TELEMETRY_EVENTS } from "./utils/telemetry/events";
+
+export type ComposioInputFieldsParams = z.infer<
+  typeof ZGetExpectedParamsForUserParams
+>;
+export type ComposioInputFieldsRes = z.infer<typeof ZGetExpectedParamsRes>;
 
 export class Composio {
   /**
@@ -37,33 +48,39 @@ export class Composio {
   /**
    * Initializes a new instance of the Composio class.
    *
-   * @param {string} [apiKey] - The API key for authenticating with the Composio backend. Can also be set locally in an environment variable.
-   * @param {string} [baseUrl] - The base URL for the Composio backend. By default, it is set to the production URL.
-   * @param {string} [runtime] - The runtime environment for the SDK.
+   * @param {Object} config - Configuration object for the Composio SDK
+   * @param {string} [config.apiKey] - The API key for authenticating with the Composio backend. Can also be set locally in an environment variable.
+   * @param {string} [config.baseUrl] - The base URL for the Composio backend. By default, it is set to the production URL.
+   * @param {string} [config.runtime] - The runtime environment for the SDK.
    */
-  constructor(apiKey?: string, baseUrl?: string, runtime?: string) {
-    // // Parse the base URL and API key, falling back to environment variables or defaults if not provided.
+  constructor(
+    config: { apiKey?: string; baseUrl?: string; runtime?: string } = {}
+  ) {
+    // Parse the base URL and API key, falling back to environment variables or defaults if not provided
     const { baseURL: baseURLParsed, apiKey: apiKeyParsed } = getSDKConfig(
-      baseUrl,
-      apiKey
+      config?.baseUrl,
+      config?.apiKey
     );
 
     ComposioSDKContext.apiKey = apiKeyParsed;
+    ComposioSDKContext.sessionId = getUUID();
     ComposioSDKContext.baseURL = baseURLParsed;
-    ComposioSDKContext.frameworkRuntime = runtime;
-    ComposioSDKContext.composioVersion = require(
-      getPackageJsonDir() + "/package.json"
-    ).version;
+    ComposioSDKContext.frameworkRuntime = config?.runtime;
+    ComposioSDKContext.composioVersion = COMPOSIO_VERSION;
 
     TELEMETRY_LOGGER.manualTelemetry(TELEMETRY_EVENTS.SDK_INITIALIZED, {});
+
     if (!apiKeyParsed) {
-      throw CEG.getCustomError(SDK_ERROR_CODES.COMMON.API_KEY_UNAVAILABLE, {
-        message: "🔑 API Key is not provided",
-        description:
-          "You need to provide it in the constructor or as an environment variable COMPOSIO_API_KEY",
-        possibleFix:
-          "Please provide a valid API Key. You can get it from https://app.composio.dev/settings",
-      });
+      throw CEG.getCustomError(
+        COMPOSIO_SDK_ERROR_CODES.COMMON.API_KEY_UNAVAILABLE,
+        {
+          message: "🔑 API Key is not provided",
+          description:
+            "You need to provide it in the constructor or as an environment variable COMPOSIO_API_KEY",
+          possibleFix:
+            "Please provide a valid API Key. You can get it from https://app.composio.dev/settings OR Check if you are passing it as an object in the constructor like - { apiKey: 'your-api-key' }",
+        }
+      );
     }
 
     logger.info(
@@ -74,7 +91,7 @@ export class Composio {
     this.backendClient = new BackendClient(
       apiKeyParsed,
       baseURLParsed,
-      runtime
+      config?.runtime
     );
 
     // Instantiate models with dependencies as needed.
@@ -92,13 +109,10 @@ export class Composio {
    * Checks for the latest version of the Composio SDK from NPM.
    * If a newer version is available, it logs a warning to the console.
    */
-  async checkForLatestVersionFromNPM() {
+  private async checkForLatestVersionFromNPM() {
     try {
       const packageName = "composio-core";
-      const packageJsonDir = getPackageJsonDir();
-      const currentVersionFromPackageJson = require(
-        packageJsonDir + "/package.json"
-      ).version;
+      const currentVersionFromPackageJson = COMPOSIO_VERSION;
 
       const response = await axios.get(
         `https://registry.npmjs.org/${packageName}/latest`
@@ -106,11 +120,12 @@ export class Composio {
       const latestVersion = response.data.version;
 
       if (isNewerVersion(latestVersion, currentVersionFromPackageJson)) {
+        // eslint-disable-next-line no-console
         console.warn(
           `🚀 Upgrade available! Your composio-core version (${currentVersionFromPackageJson}) is behind. Latest version: ${latestVersion}.`
         );
       }
-    } catch (error) {
+    } catch (_error) {
       // Ignore and do nothing
     }
   }
@@ -131,29 +146,8 @@ export class Composio {
   }
 
   async getExpectedParamsForUser(
-    params: {
-      app?: string;
-      integrationId?: string;
-      entityId?: string;
-      authScheme?:
-        | "OAUTH2"
-        | "OAUTH1"
-        | "API_KEY"
-        | "BASIC"
-        | "BEARER_TOKEN"
-        | "BASIC_WITH_JWT";
-    } = {}
-  ): Promise<{
-    expectedInputFields: GetConnectorInfoResDTO["expectedInputFields"];
-    integrationId: string;
-    authScheme:
-      | "OAUTH2"
-      | "OAUTH1"
-      | "API_KEY"
-      | "BASIC"
-      | "BEARER_TOKEN"
-      | "BASIC_WITH_JWT";
-  }> {
+    params: ComposioInputFieldsParams
+  ): Promise<ComposioInputFieldsRes> {
     TELEMETRY_LOGGER.manualTelemetry(TELEMETRY_EVENTS.SDK_METHOD_INVOKED, {
       method: "getExpectedParamsForUser",
       file: this.fileName,
@@ -173,10 +167,10 @@ export class Composio {
         });
         if (params.authScheme && integrations) {
           integrations.items = integrations.items.filter(
-            (integration: any) => integration.authScheme === params.authScheme
+            (integration) => integration.authScheme === params.authScheme
           );
         }
-        integrationId = (integrations?.items[0] as any)?.id;
+        integrationId = integrations?.items[0]?.id as string;
       } catch (_) {
         // do nothing
       }
@@ -192,13 +186,7 @@ export class Composio {
       return {
         expectedInputFields: integration.expectedInputFields,
         integrationId: integration.id!,
-        authScheme: integration.authScheme as
-          | "OAUTH2"
-          | "OAUTH1"
-          | "API_KEY"
-          | "BASIC"
-          | "BEARER_TOKEN"
-          | "BASIC_WITH_JWT",
+        authScheme: integration.authScheme as z.infer<typeof ZAuthMode>,
       };
     }
 
@@ -222,7 +210,7 @@ export class Composio {
       for (const scheme of preferredAuthScheme) {
         if (
           appInfo.auth_schemes
-            ?.map((_authScheme: any) => _authScheme.mode)
+            ?.map((_authScheme) => _authScheme.mode)
             .includes(scheme)
         ) {
           schema = scheme;
@@ -231,14 +219,19 @@ export class Composio {
       }
     }
 
+    const hasTestConnectors = (appInfo.testConnectors?.length ?? 0) > 0;
+    const authSchemeFields = appInfo.auth_schemes?.find(
+      (_authScheme) => _authScheme.mode === schema
+    )?.fields;
+    const requiredCustomerFields =
+      (
+        authSchemeFields as {
+          expected_from_customer: boolean;
+        }[]
+      )?.filter((field) => !field.expected_from_customer)?.length ?? 0;
+
     const areNoFieldsRequiredForIntegration =
-      (appInfo.testConnectors?.length ?? 0) > 0 ||
-      ((
-        appInfo.auth_schemes?.find(
-          (_authScheme: any) => _authScheme.mode === schema
-        ) as any
-      )?.fields?.filter((field: any) => !field.expected_from_customer)
-        ?.length ?? 0) == 0;
+      hasTestConnectors || requiredCustomerFields === 0;
 
     if (!areNoFieldsRequiredForIntegration) {
       throw new Error(
@@ -249,14 +242,14 @@ export class Composio {
     const timestamp = new Date().toISOString().replace(/[-:.]/g, "");
     const hasRelevantTestConnectors = params.authScheme
       ? appInfo.testConnectors?.filter(
-          (connector: any) => connector.authScheme === params.authScheme
+          (connector) => connector.authScheme === params.authScheme
         )?.length! > 0
       : appInfo.testConnectors?.length! > 0;
     if (hasRelevantTestConnectors) {
       integration = await this.integrations.create({
         appId: appInfo.appId,
         name: `integration_${timestamp}`,
-        authScheme: schema,
+        authScheme: schema as z.infer<typeof ZAuthMode>,
         authConfig: {},
         useComposioAuth: true,
       });
@@ -264,13 +257,7 @@ export class Composio {
       return {
         expectedInputFields: integration?.expectedInputFields!,
         integrationId: integration?.id!,
-        authScheme: integration?.authScheme as
-          | "OAUTH2"
-          | "OAUTH1"
-          | "API_KEY"
-          | "BASIC"
-          | "BEARER_TOKEN"
-          | "BASIC_WITH_JWT",
+        authScheme: integration?.authScheme as z.infer<typeof ZAuthMode>,
       };
     }
 
@@ -285,7 +272,7 @@ export class Composio {
     integration = await this.integrations.create({
       appId: appInfo.appId,
       name: `integration_${timestamp}`,
-      authScheme: schema,
+      authScheme: schema as z.infer<typeof ZAuthMode>,
       authConfig: {},
       useComposioAuth: false,
     });
@@ -298,13 +285,7 @@ export class Composio {
     return {
       expectedInputFields: integration.expectedInputFields,
       integrationId: integration.id!,
-      authScheme: integration.authScheme as
-        | "OAUTH2"
-        | "OAUTH1"
-        | "API_KEY"
-        | "BASIC"
-        | "BEARER_TOKEN"
-        | "BASIC_WITH_JWT",
+      authScheme: integration.authScheme as z.infer<typeof ZAuthMode>,
     };
   }
 }
